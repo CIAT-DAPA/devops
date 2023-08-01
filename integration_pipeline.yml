@@ -1,0 +1,135 @@
+# This code is a YAML configuration file for a GitHub action.
+# This workflow is designed to implement an automated test, branch merge, and release flow in Python.
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
+
+name: Devops # Define el nombre del flujo de trabajo
+
+on: # Los desencadenadores indican cuándo se ejecutará el flujo de trabajo
+  push:
+    branches: [ "stage" ]  # Se ejecutará cuando se realicen cambios en la rama stage.
+    tags:
+    - 'v*' # Se ejecutará cuando se cree una etiqueta (tag) que cumpla con el patrón.
+
+
+permissions:
+  contents: read # Define que el flujo de trabajo tiene permiso de lectura para el contenido.
+
+jobs:
+
+# ------- START ORM PROCCESS -------- #
+
+  Test:
+
+    runs-on: ubuntu-latest #  Especifica que este trabajo se ejecutará en una máquina virtual con sistema operativo Ubuntu.
+
+    steps: # Define una secuencia de pasos para el trabajo.
+    - uses: actions/checkout@v3 # Checkout del repositorio
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.9" # Configuración del entorno Python 3.9
+    - name: Create environment 
+      run: |
+        python -m venv env
+    - name: Active environment
+      run: |
+        source env/bin/activate
+    - name: Install dependencies
+      run: |
+        pip install -r ./src/requirements.txt
+    - name: Run Tests
+      run: |
+        python -m unittest discover -s ./src/tests/ -p 'test_*.py'
+# ------- END ORM PROCCESS -------- #    
+
+# ------- START MERGE PROCCESS -------- #
+
+  MergeMain:
+    needs: Test #Indica que este trabajo depende del trabajo "Test" y se ejecutará después de que ese trabajo haya finalizado con éxito.
+    name: Merge Stage with Main
+    permissions: write-all
+    runs-on: ubuntu-latest # Especifica que este trabajo también se ejecutará en una máquina virtual con sistema operativo Ubuntu
+    steps:
+      - uses: actions/checkout@master  # Checkout del repositorio en la rama master 
+
+      - name: Merge stage -> main
+        uses: devmasx/merge-branch@master  #ombinación (merge) de la rama stage en la rama main
+        with:
+          type: now
+          head_to_merge: ${{ github.ref }}
+          target_branch: main
+          github_token: ${{ github.token }}
+
+# ------- END MERGE PROCCESS -------- #
+
+# ------- START RELEASE PROCCESS -------- #
+
+  PostRelease:
+    needs: MergeMain #  Indica que este trabajo depende del trabajo "MergeMain" y se ejecutará después de que ese trabajo haya finalizado con éxito.
+    name: Create Release
+    runs-on: ubuntu-latest #Especifica que este trabajo también se ejecutará en una máquina virtual con sistema operativo Ubuntu.
+    permissions: write-all
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        fetch-depth: '0' # Checkout del repositorio con una profundidad de historial de 0 
+    # Generate Tagname
+    - name: Generate Tagname for release
+      id: taggerDryRun
+      uses: anothrNick/github-tag-action@1.61.0 # Generación de un nombre de etiqueta (tag) para la versión de lanzamiento
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        WITH_V: true
+        DRY_RUN: true
+        DEFAULT_BUMP: patch
+        RELEASE_BRANCHES : stage,main
+        BRANCH_HISTORY: last
+    # update version swagger.json
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        ref: main
+    - name: Update version
+      run: |
+        sed -i "s/"version": ".*"/version: "${{ steps.taggerDryRun.outputs.new_tag }}"/" src/static/swagger.json
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Commit changes
+      uses: stefanzweifel/git-auto-commit-action@v4
+      with:
+        commit_message: "Update version to ${{ steps.taggerDryRun.outputs.new_tag }}"
+    # API Zip
+    - name: Zip artifact for deployment # Creación de un archivo ZIP con el contenido del codigo para su despliegue.
+      run: cd ./src && zip -r ../release.zip ./* && cd .. 
+    # Upload Artifacts
+    - name: Upload ORM artifact for deployment job # Subida del artefacto ZIP para su uso posterior.
+      uses: actions/upload-artifact@v3
+      with:
+        name: API
+        path: release.zip
+    # Create release
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1 # Creación de un lanzamiento (release) en GitHub
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        tag_name: ${{ steps.taggerDryRun.outputs.new_tag }}
+        release_name: Release ${{ steps.taggerDryRun.outputs.new_tag }}
+        #body_path: ./body.md
+        body: ${{ github.event.head_commit.message }}
+        draft: false
+        prerelease: false
+    # Upload Assets to release
+    - name: Upload Release Asset
+      id: upload-release-asset 
+      uses: actions/upload-release-asset@v1 # Subida del archivo ZIP del codigo como un activo del lanzamiento 
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }} # Esto tira del paso CREATE RELEASE anterior, haciendo referencia a su ID para obtener su objeto de salida, que incluye un `upload_url`. Consulte esta entrada de blog para obtener más información: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps 
+        asset_path: ./release.zip
+        asset_name: release.zip
+        asset_content_type: application/zip
+
+# ------- END RELEASE PROCCESS -------- #
