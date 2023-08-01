@@ -84,20 +84,6 @@ jobs:
         DEFAULT_BUMP: patch
         RELEASE_BRANCHES : stage,main
         BRANCH_HISTORY: last
-    # update version swagger.json
-    - name: Checkout code
-      uses: actions/checkout@v3
-      with:
-        ref: main
-    - name: Update version
-      run: |
-        sed -i "s/"version": ".*"/version: "${{ steps.taggerDryRun.outputs.new_tag }}"/" src/static/swagger.json
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-    - name: Commit changes
-      uses: stefanzweifel/git-auto-commit-action@v4
-      with:
-        commit_message: "Update version to ${{ steps.taggerDryRun.outputs.new_tag }}"
     # API Zip
     - name: Zip artifact for deployment # Creación de un archivo ZIP con el contenido del codigo para su despliegue.
       run: cd ./src && zip -r ../release.zip ./* && cd .. 
